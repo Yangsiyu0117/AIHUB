@@ -1,0 +1,60 @@
+# 生产环境部署配置
+# 用法: docker compose -f docker-compose.prod.yml up -d
+
+services:
+  new-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: new-api:latest
+    container_name: new-api-prod
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3000}:3000"
+    volumes:
+      - prod_data:/data
+    environment:
+      - SQL_DSN=${SQL_DSN:-postgresql://newapi:password@postgres:5432/new-api}
+      - REDIS_CONN_STRING=${REDIS_CONN_STRING:-redis://redis}
+      - TZ=Asia/Shanghai
+      - BATCH_UPDATE_ENABLED=true
+    depends_on:
+      redis:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+    networks:
+      - prod-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: new-api-redis
+    restart: unless-stopped
+    networks:
+      - prod-network
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: new-api-pg
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-newapi}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+      POSTGRES_DB: ${POSTGRES_DB:-new-api}
+    volumes:
+      - prod_pg_data:/var/lib/postgresql/data
+    networks:
+      - prod-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-newapi} -d ${POSTGRES_DB:-new-api}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  prod_data:
+  prod_pg_data:
+
+networks:
+  prod-network:
+    driver: bridge
