@@ -1,0 +1,123 @@
+diff --git a/relay/channel/task/kling/adaptor.go b/relay/channel/task/kling/adaptor.go
+index c7a492b9..a4f624ee 100644
+--- a/relay/channel/task/kling/adaptor.go
++++ b/relay/channel/task/kling/adaptor.go
+@@ -27,6 +27,32 @@ import (
+ 	"github.com/QuantumNous/new-api/service"
+ )
+ 
++
++// flexibleCode supports JSON unmarshalling from both numeric and string codes.
++// AIClub returns code as number 200 for submit and string "200" for query.
++type flexibleCode int
++
++func (fc *flexibleCode) UnmarshalJSON(data []byte) error {
++	s := strings.TrimSpace(string(data))
++	if s == "null" || s == "" {
++		return nil
++	}
++	// Remove surrounding quotes if present (JSON string value)
++	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
++		s = s[1 : len(s)-1]
++	}
++	var n int
++	if _, err := fmt.Sscanf(s, "%d", &n); err != nil {
++		return fmt.Errorf("cannot parse %q as flexibleCode", s)
++	}
++	*fc = flexibleCode(n)
++	return nil
++}
++
++func (fc flexibleCode) Int() int {
++	return int(fc)
++}
++
+ // ============================
+ // Request / Response structures
+ // ============================
+@@ -74,7 +100,7 @@ type requestPayload struct {
+ }
+ 
+ type responsePayload struct {
+-	Code      int    `json:"code"`
++	Code      flexibleCode `json:"code"`
+ 	Message   string `json:"message"`
+ 	TaskId    string `json:"task_id"`
+ 	RequestId string `json:"request_id"`
+@@ -136,6 +162,10 @@ func (a *TaskAdaptor) ValidateRequestAndSetAction(c *gin.Context, info *relaycom
+ func (a *TaskAdaptor) BuildRequestURL(info *relaycommon.RelayInfo) (string, error) {
+ 	path := lo.Ternary(info.Action == constant.TaskActionGenerate, "/v1/videos/image2video", "/v1/videos/text2video")
+ 
++	if isAIClubRelay(a.baseURL) {
++		return fmt.Sprintf("%s/kling%s", a.baseURL, path), nil
++	}
++
+ 	if isNewAPIRelay(info.ApiKey) {
+ 		return fmt.Sprintf("%s/kling%s", a.baseURL, path), nil
+ 	}
+@@ -201,7 +231,7 @@ func (a *TaskAdaptor) DoResponse(c *gin.Context, resp *http.Response, info *rela
+ 		taskErr = service.TaskErrorWrapper(err, "unmarshal_response_failed", http.StatusInternalServerError)
+ 		return
+ 	}
+-	if kResp.Code != 0 {
++	if kResp.Code.Int() != 0 && kResp.Code.Int() != 200 {
+ 		taskErr = service.TaskErrorWrapperLocal(fmt.Errorf("%s", kResp.Message), "task_failed", http.StatusBadRequest)
+ 		return
+ 	}
+@@ -226,7 +256,10 @@ func (a *TaskAdaptor) FetchTask(baseUrl, key string, body map[string]any, proxy
+ 	}
+ 	path := lo.Ternary(action == constant.TaskActionGenerate, "/v1/videos/image2video", "/v1/videos/text2video")
+ 	url := fmt.Sprintf("%s%s/%s", baseUrl, path, taskID)
+-	if isNewAPIRelay(key) {
++	if isAIClubRelay(baseUrl) {
++		// AIClub uses /kling/v1/tasks/{id} instead of official path
++		url = fmt.Sprintf("%s/kling/v1/tasks/%s", baseUrl, taskID)
++	} else if isNewAPIRelay(key) {
+ 		url = fmt.Sprintf("%s/kling%s/%s", baseUrl, path, taskID)
+ 	}
+ 
+@@ -311,6 +344,10 @@ func (a *TaskAdaptor) createJWTToken() (string, error) {
+ }
+ 
+ func (a *TaskAdaptor) createJWTTokenWithKey(apiKey string) (string, error) {
++	if isAIClubRelay(a.baseURL) {
++		// AIClub expects plain token without sk- prefix
++		return strings.TrimPrefix(apiKey, "sk-"), nil
++	}
+ 	if isNewAPIRelay(apiKey) {
+ 		return apiKey, nil // new api relay
+ 	}
+@@ -341,7 +378,7 @@ func (a *TaskAdaptor) ParseTaskResult(respBody []byte) (*relaycommon.TaskInfo, e
+ 	if err != nil {
+ 		return nil, errors.Wrap(err, "failed to unmarshal response body")
+ 	}
+-	taskInfo.Code = resPayload.Code
++	taskInfo.Code = resPayload.Code.Int()
+ 	taskInfo.TaskID = resPayload.Data.TaskId
+ 	taskInfo.Reason = resPayload.Data.TaskStatusMsg
+ 	//任务状态，枚举值：submitted（已提交）、processing（处理中）、succeed（成功）、failed（失败）
+@@ -377,6 +414,11 @@ func isNewAPIRelay(apiKey string) bool {
+ 	return strings.HasPrefix(apiKey, "sk-")
+ }
+ 
++func isAIClubRelay(baseURL string) bool {
++	return strings.Contains(baseURL, "aiclub")
++}
++
++
+ func (a *TaskAdaptor) ConvertToOpenAIVideo(originTask *model.Task) ([]byte, error) {
+ 	var klingResp responsePayload
+ 	if err := common.Unmarshal(originTask.Data, &klingResp); err != nil {
+@@ -400,10 +442,10 @@ func (a *TaskAdaptor) ConvertToOpenAIVideo(originTask *model.Task) ([]byte, erro
+ 		}
+ 	}
+ 
+-	if klingResp.Code != 0 && klingResp.Message != "" {
++	if klingResp.Code.Int() != 0 && klingResp.Code.Int() != 200 && klingResp.Message != "" {
+ 		openAIVideo.Error = &dto.OpenAIVideoError{
+ 			Message: klingResp.Message,
+-			Code:    fmt.Sprintf("%d", klingResp.Code),
++			Code:    fmt.Sprintf("%d", klingResp.Code.Int()),
+ 		}
+ 	}
+ 
