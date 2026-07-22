@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -121,8 +122,18 @@ func (a *TaskAdaptor) ValidateRequestAndSetAction(c *gin.Context, info *relaycom
 	return relaycommon.ValidateBasicTaskRequest(c, info, constant.TaskActionGenerate)
 }
 
+// isAIClubRelay reports whether baseURL points at the AIClub relay platform,
+// which exposes Doubao/Seedance under /openApi/doubao/v1/* instead of the
+// official Volcengine path /api/v3/contents/generations/tasks.
+func isAIClubRelay(baseURL string) bool {
+	return strings.Contains(baseURL, "aiclub")
+}
+
 // BuildRequestURL constructs the upstream URL.
 func (a *TaskAdaptor) BuildRequestURL(_ *relaycommon.RelayInfo) (string, error) {
+	if isAIClubRelay(a.baseURL) {
+		return fmt.Sprintf("%s/openApi/doubao/v1/video", a.baseURL), nil
+	}
 	return fmt.Sprintf("%s/api/v3/contents/generations/tasks", a.baseURL), nil
 }
 
@@ -245,6 +256,10 @@ func (a *TaskAdaptor) FetchTask(baseUrl, key string, body map[string]any, proxy 
 	}
 
 	uri := fmt.Sprintf("%s/api/v3/contents/generations/tasks/%s", baseUrl, taskID)
+	if isAIClubRelay(baseUrl) {
+		// AIClub uses /openApi/doubao/v1/tasks/{id} instead of the official path
+		uri = fmt.Sprintf("%s/openApi/doubao/v1/tasks/%s", baseUrl, taskID)
+	}
 
 	req, err := http.NewRequest(http.MethodGet, uri, nil)
 	if err != nil {
